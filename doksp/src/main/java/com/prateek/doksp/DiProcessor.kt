@@ -175,7 +175,7 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
 
         val funBuilder = FunSpec.builder(funName)
             .addTypeVariable(TypeVariableName("T"))
-            .receiver(ClassName("tinydi.generated", "TinyDIComponent"))
+            //.receiver(ClassName("tinydi.generated", "TinyDIComponent"))
             .addParameter(clazzParam)
             .returns(TypeVariableName("T"))
             .addModifiers(KModifier.PUBLIC)
@@ -189,8 +189,10 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
         injectCtors.forEach { ctor ->
             val factoryName = ClassName(ctor.className.packageName, "${ctor.className.simpleName}Factory")
             val depsCalls = ctor.paramTypes.map {
-                "$funName(${it}::class)"
+                "$funName(${it}::class)" // This will be gerDependency(NetworkClient::class) for each param
             }
+
+            //%T in KotlinPoet Statement takes ClassName and it imports package for it and basically takes the class
             val creation = "%T().create(${depsCalls.joinToString()})"
             funBuilder.addStatement("%T::class -> $creation as T", ctor.className, factoryName)
         }
