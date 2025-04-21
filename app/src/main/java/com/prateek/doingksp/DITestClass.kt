@@ -1,5 +1,6 @@
 package com.prateek.doingksp
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import com.prateek.doksp.inject_annotations.Inject
 import com.prateek.doksp.inject_annotations.Singleton
@@ -13,15 +14,12 @@ class Repository2 @Inject constructor(private val net: NetworkClient)
 
 class MyViewModel @Inject constructor(
     private val repo: Repository1,
-    private val repository2: Repository2
+    private val repository2: Repository2,
+    private val context:Context
 ):ViewModel(){
 
-    init {
-
-    }
-
     fun getPrateek():String{
-        return "Prateek"
+        return "Prateek ${context.packageName}"
     }
 
 

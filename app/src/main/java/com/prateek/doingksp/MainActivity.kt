@@ -13,14 +13,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import com.prateek.doingksp.ui.theme.DoingKSPTheme
 import tinydi.generated.TinyDIComponent
-import tinydi.generated.get
 
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val viewModel = TinyDIComponent.get<MyViewModel>()
+        val component = TinyDIComponent().apply {
+            //Runtime Bindings
+            bind(baseContext)
+        }
+
+        val viewModel = component.inject<MyViewModel>()
+
+
         enableEdgeToEdge()
         setContent {
             DoingKSPTheme {

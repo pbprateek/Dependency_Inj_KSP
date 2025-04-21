@@ -1,5 +1,6 @@
 package com.prateek.doksp
 
+import androidx.annotation.Keep
 import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.Dependencies
 import com.google.devtools.ksp.processing.KSPLogger
@@ -15,8 +16,10 @@ import com.squareup.kotlinpoet.ClassName
 import com.squareup.kotlinpoet.FileSpec
 import com.squareup.kotlinpoet.FunSpec
 import com.squareup.kotlinpoet.KModifier
+import com.squareup.kotlinpoet.MUTABLE_MAP
 import com.squareup.kotlinpoet.ParameterSpec
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
+import com.squareup.kotlinpoet.PropertySpec
 import com.squareup.kotlinpoet.TypeName
 import com.squareup.kotlinpoet.TypeSpec
 import com.squareup.kotlinpoet.TypeVariableName
@@ -30,6 +33,11 @@ import kotlin.reflect.KClass
 
 class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: KSPLogger) :
     SymbolProcessor {
+
+    val ANY = ClassName("kotlin", "Any").copy(nullable = true)
+
+    //If outType is Any?, this returns *, which is shorthand for out Any
+    val STAR = WildcardTypeName.producerOf(ANY)
 
     /**
      * Keep *pure metadata* instead of raw KS* symbols, otherwise you risk the
@@ -60,7 +68,7 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
             generateFactory(injClass)
 
             val klass = (injClass.parentDeclaration as KSClassDeclaration).toClassName()
-            val deps  = injClass.parameters.map { it.type.toTypeName() }
+            val deps = injClass.parameters.map { it.type.toTypeName() }
             collectedInjects += InjectInfo(klass, deps)
         }
 
@@ -123,7 +131,10 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
                                 ClassName(packageName, className)
                             )
                             .build()
-                    ).build()
+                    )
+                    //To prevent pruning from build time
+                    .addAnnotation(AnnotationSpec.builder(Keep::class).build())
+                    .build()
             ).build()
 
         fileSpec.writeTo(codeGenerator, Dependencies(true))
@@ -146,30 +157,55 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
     private fun buildComponentSpec(injectCtors: List<InjectInfo>): FileSpec {
         val getFun = buildGetFun(injectCtors)
 
-        val componentType = TypeSpec.objectBuilder("TinyDIComponent")
-            .addFunction(getFun)
-            .build()
-
-        val reifiedWrapper = FunSpec.builder("get")
+        //The Inline Public function to get dependency in the app
+        val reifiedWrapper = FunSpec.builder("inject")
             .addTypeVariable(TypeVariableName("T").copy(reified = true))
-            .receiver(ClassName("tinydi.generated", "TinyDIComponent"))
+            //.receiver(ClassName("tinydi.generated", "TinyDIComponent"))
             .addModifiers(KModifier.INLINE)
             .returns(TypeVariableName("T"))
             .addStatement("return getDependency(T::class) as T")
             .build()
 
+
+        val runTimeBindingProperty =
+            PropertySpec.builder(
+                "runTimeBindings", MUTABLE_MAP
+                    .parameterizedBy(
+                        KClass::class.asClassName().parameterizedBy(STAR),
+                        ClassName("kotlin", "Any")
+                    ), KModifier.PUBLIC //Public bcz we are using inline to set this
+            )
+                .mutable(false)
+                .initializer("mutableMapOf()")
+                .build()
+
+        //Bind function to add dependencies to the map we just created
+        val type = TypeVariableName("T", ANY.copy(nullable = false)).copy(reified = true)
+        val bindRuntimeFunction = FunSpec.builder("bind")
+            .addTypeVariable(type)
+            .addModifiers(KModifier.INLINE)
+            .addParameter(ParameterSpec("instance", TypeVariableName("T")))
+            .addStatement("runTimeBindings[T::class] = instance")
+            .build()
+
+
+        val componentType = TypeSpec.classBuilder("TinyDIComponent")
+            .addFunction(getFun)
+            .addFunction(reifiedWrapper)
+            .addFunction(bindRuntimeFunction)
+            .addProperty(runTimeBindingProperty)
+            .build()
+
         return FileSpec.builder("tinydi.generated", "TinyDIComponent")
             .addType(componentType)
-            .addFunction(reifiedWrapper)
             .build()
     }
 
     @Suppress("UNCHECKED_CAST")
     private fun buildGetFun(injectCtors: List<InjectInfo>): FunSpec {
-        val ANY  = ClassName("kotlin", "Any",).copy(nullable = true)
-        //If outType is Any?, this returns *, which is shorthand for out Any
-        val STAR = WildcardTypeName.producerOf(ANY)
-        val clazzParam = ParameterSpec.builder("clazz", KClass::class.asClassName().parameterizedBy(STAR)).build()
+        val clazzParam =
+            ParameterSpec.builder("clazz", KClass::class.asClassName().parameterizedBy(STAR))
+                .build()
 
         val funName = "getDependency"
 
@@ -185,9 +221,10 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
                     .build()
             )
 
-        funBuilder.beginControlFlow("return when (clazz)")
+        funBuilder.beginControlFlow("return runTimeBindings[clazz] as? T ?: when (clazz)")
         injectCtors.forEach { ctor ->
-            val factoryName = ClassName(ctor.className.packageName, "${ctor.className.simpleName}Factory")
+            val factoryName =
+                ClassName(ctor.className.packageName, "${ctor.className.simpleName}Factory")
             val depsCalls = ctor.paramTypes.map {
                 "$funName(${it}::class)" // This will be gerDependency(NetworkClient::class) for each param
             }
