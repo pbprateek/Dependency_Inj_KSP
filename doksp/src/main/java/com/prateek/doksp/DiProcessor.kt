@@ -1,16 +1,20 @@
 package com.prateek.doksp
 
 import androidx.annotation.Keep
+import com.google.devtools.ksp.getDeclaredFunctions
 import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.Dependencies
 import com.google.devtools.ksp.processing.KSPLogger
 import com.google.devtools.ksp.processing.Resolver
 import com.google.devtools.ksp.processing.SymbolProcessor
+import com.google.devtools.ksp.symbol.ClassKind
 import com.google.devtools.ksp.symbol.KSAnnotated
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.symbol.KSFunctionDeclaration
 import com.google.devtools.ksp.validate
 import com.prateek.doksp.inject_annotations.Inject
+import com.prateek.doksp.inject_annotations.Module
+import com.prateek.doksp.inject_annotations.Provides
 import com.squareup.kotlinpoet.AnnotationSpec
 import com.squareup.kotlinpoet.ClassName
 import com.squareup.kotlinpoet.FileSpec
@@ -49,8 +53,18 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
         val paramTypes: List<TypeName>
     )
 
+
+    data class ProviderInfo(
+        val returnType: TypeName,
+        val funName: String,
+        val moduleClassName: ClassName,
+        val paramTypes: List<TypeName>
+    )
+
     // Accumulate validated @Inject constructors across rounds
     private val collectedInjects = mutableListOf<InjectInfo>()
+
+    private val collectedProvides = mutableListOf<ProviderInfo>()
 
     override fun process(resolver: Resolver): List<KSAnnotated> {
 
@@ -66,13 +80,49 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
 
         injectClasses.forEach { injClass ->
             generateFactory(injClass)
-
             val klass = (injClass.parentDeclaration as KSClassDeclaration).toClassName()
             val deps = injClass.parameters.map { it.type.toTypeName() }
             collectedInjects += InjectInfo(klass, deps)
         }
 
-        return injectClasses.filter { !it.validate() }.toList()
+
+        // --- @Provides functions (only those inside @Module classes) --------------
+        val modules = resolver.getSymbolsWithAnnotation(Module::class.qualifiedName!!).toList()
+
+        val moduleClasses = modules.filterIsInstance<KSClassDeclaration>()
+            .filter {
+                if (it.classKind != ClassKind.OBJECT) {
+                    logger.error("Only object type classes allowed for @Module. Problem with: ${it.simpleName.asString()}")
+                    false
+                } else {
+                    true
+                }
+            }
+
+        moduleClasses.forEach {
+            val functionsWithProvide = it.getDeclaredFunctions()
+                //Filter Function with provides as there can be other unwanted Kotlin functions like <init>(Run and see)
+                .filter { func ->
+                    func.annotations.find { annot ->
+                        Provides::class.simpleName == annot.shortName.asString()
+                    } != null
+                }
+
+            functionsWithProvide.forEach { func ->
+                val provideInfo = ProviderInfo(
+                    func.returnType!!.toTypeName(),
+                    func.simpleName.asString(),
+                    (func.parentDeclaration as KSClassDeclaration).toClassName(),
+                    func.parameters.map { it.type.toTypeName() }
+                )
+                logger.warn(provideInfo.toString())
+                collectedProvides += provideInfo
+            }
+        }
+
+
+        return injects.filter { !it.validate() }.toList() +
+                modules.filter { !it.validate() }.toList()
 
     }
 
@@ -82,7 +132,7 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
      */
     override fun finish() {
         super.finish()
-        generateComponent(collectedInjects)
+        generateComponent(collectedInjects, collectedProvides)
     }
 
     /*
@@ -141,8 +191,11 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
 
     }
 
-    private fun generateComponent(injectCtors: List<InjectInfo>) {
-        val fileSpec = buildComponentSpec(injectCtors)
+    private fun generateComponent(
+        injectCtors: List<InjectInfo>,
+        providedFunctions: List<ProviderInfo>
+    ) {
+        val fileSpec = buildComponentSpec(injectCtors, providedFunctions)
 
         val file = codeGenerator.createNewFile(
             Dependencies(aggregating = true),
@@ -154,8 +207,11 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
         }
     }
 
-    private fun buildComponentSpec(injectCtors: List<InjectInfo>): FileSpec {
-        val getFun = buildGetFun(injectCtors)
+    private fun buildComponentSpec(
+        injectCtors: List<InjectInfo>,
+        providedFunctions: List<ProviderInfo>
+    ): FileSpec {
+        val getFun = buildGetFun(injectCtors, providedFunctions)
 
         //The Inline Public function to get dependency in the app
         val reifiedWrapper = FunSpec.builder("inject")
@@ -202,9 +258,15 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun buildGetFun(injectCtors: List<InjectInfo>): FunSpec {
+    private fun buildGetFun(
+        injectCtors: List<InjectInfo>,
+        providedFunctions: List<ProviderInfo>
+    ): FunSpec {
         val clazzParam =
-            ParameterSpec.builder("clazz", KClass::class.asClassName().parameterizedBy(STAR))
+            ParameterSpec.builder(
+                "clazz",
+                KClass::class.asClassName().parameterizedBy(STAR)
+            )
                 .build()
 
         val funName = "getDependency"
@@ -222,16 +284,40 @@ class DiProcessor(private val codeGenerator: CodeGenerator, private val logger: 
             )
 
         funBuilder.beginControlFlow("return runTimeBindings[clazz] as? T ?: when (clazz)")
+
+
+        providedFunctions.forEach { providedFunc ->
+            val dependencyStatement = providedFunc.paramTypes.joinToString {
+                "$funName(%T::class)"
+            }.trim()
+
+            funBuilder.addStatement(
+                "%T::class -> %T.${providedFunc.funName}(${dependencyStatement}) as T",
+                providedFunc.returnType,
+                providedFunc.moduleClassName,
+                //Using Kotlin Spread operator for vararg
+                *providedFunc.paramTypes.toTypedArray()
+            )
+
+
+        }
+
         injectCtors.forEach { ctor ->
             val factoryName =
                 ClassName(ctor.className.packageName, "${ctor.className.simpleName}Factory")
             val depsCalls = ctor.paramTypes.map {
-                "$funName(${it}::class)" // This will be gerDependency(NetworkClient::class) for each param
+                "$funName(%T::class)" // This will be gerDependency(NetworkClient::class) for each param
             }
 
             //%T in KotlinPoet Statement takes ClassName and it imports package for it and basically takes the class
             val creation = "%T().create(${depsCalls.joinToString()})"
-            funBuilder.addStatement("%T::class -> $creation as T", ctor.className, factoryName)
+            funBuilder.addStatement(
+                "%T::class -> $creation as T",
+                ctor.className,
+                factoryName,
+                //Using Kotlin Spread operator for vararg
+                *ctor.paramTypes.toTypedArray(),
+            )
         }
         //funBuilder.addStatement("else -> error(\"No binding for $\{clazz\}\")")
         funBuilder.addStatement("else -> error(\"No Binding for \")")
