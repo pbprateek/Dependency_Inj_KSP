@@ -8,7 +8,7 @@ import retrofit2.Retrofit
 object AppModule {
 
     @Provides
-    fun provideBaseUrl(): String = "Prateek"
+    fun provideBaseUrl(): String = "https://www.google.com/"
 
 
     @Provides

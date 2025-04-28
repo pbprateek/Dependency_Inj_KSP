@@ -13,15 +13,15 @@ object TinyDIComponentMightBe {
         // 1) runtime fast‑path
         runtimeBindings[clazz] as? T ?: when (clazz) {
             // 2) providers – executed every call
-            String::class -> AppModule.provideBaseUrl() as T
-            Retrofit::class -> AppModule.provideRetrofit(getDependency(String::class)) as T
-            // 3) constructor‑inject factories
-            MyViewModel::class -> MyViewModel(
-                getDependency(Repository1::class),
-                getDependency(Repository2::class),
-                getDependency(Context::class),
-                getDependency(Retrofit::class)
-            ) as T
+//            String::class -> AppModule.provideBaseUrl() as T
+//            Retrofit::class -> AppModule.provideRetrofit(getDependency(String::class)) as T
+//            // 3) constructor‑inject factories
+//            MyViewModel::class -> MyViewModel(
+//                getDependency(Repository1::class),
+//                getDependency(Repository2::class),
+//                getDependency(Context::class),
+//                getDependency(Retrofit::class)
+//            ) as T
             // … generated factory branches …
             else -> error("No binding for $clazz")
         }

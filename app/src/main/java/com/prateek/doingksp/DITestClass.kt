@@ -17,11 +17,12 @@ class MyViewModel @Inject constructor(
     private val repo: Repository1,
     private val repository2: Repository2,
     private val context:Context,
-    private val retrofit: Retrofit
+    private val retrofit: Retrofit,
+    private val baseUrl:String
 ):ViewModel(){
 
     fun getPrateek():String{
-        return "Prateek ${context.packageName}"
+        return "Prateek ${context.packageName} $baseUrl"
     }
 
 
