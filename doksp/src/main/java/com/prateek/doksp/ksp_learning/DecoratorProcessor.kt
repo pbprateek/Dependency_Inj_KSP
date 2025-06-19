@@ -14,7 +14,13 @@ class DecoratorProcessor(
     private val logger: KSPLogger
 ) : SymbolProcessor {
 
+
+    override fun finish() {
+        super.finish()
+    }
+
     override fun process(resolver: Resolver): List<KSAnnotated> {
+
         val symbols = resolver.getSymbolsWithAnnotation(
             requireNotNull(
                 Decorator::class.qualifiedName,

@@ -26,7 +26,6 @@ class MainActivity : ComponentActivity() {
 
         val viewModel = component.inject<MyViewModel>()
 
-
         enableEdgeToEdge()
         setContent {
             DoingKSPTheme {

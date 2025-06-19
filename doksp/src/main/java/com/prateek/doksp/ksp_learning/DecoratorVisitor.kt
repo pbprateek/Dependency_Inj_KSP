@@ -26,6 +26,7 @@ class DecoratorVisitor(private val codeGenerator: CodeGenerator, private val log
 
     private val functions = mutableListOf<Func>()
 
+
     override fun visitClassDeclaration(classDeclaration: KSClassDeclaration, data: Unit) {
         super.visitClassDeclaration(classDeclaration, data)
 
@@ -33,8 +34,11 @@ class DecoratorVisitor(private val codeGenerator: CodeGenerator, private val log
         classDeclaration.getDeclaredFunctions()
             .forEach { func ->
                 logger.warn("Func Name: $func")
+                //This will trigger visitFunctionDeclaration
                 func.accept(this@DecoratorVisitor, Unit)
             }
+
+
         val packageName = classDeclaration.packageName.asString()
         val classname = "Ksp_$classDeclaration"
 
@@ -42,6 +46,7 @@ class DecoratorVisitor(private val codeGenerator: CodeGenerator, private val log
         val fileSpec = FileSpec.builder(packageName, classname).apply {
             addType(
                 TypeSpec.classBuilder(classname)
+                    //Just a gotcha, But i don't find a convenient way to add val/var to constructor param
                     .primaryConstructor(
                         FunSpec.constructorBuilder()
                             .addParameter(getConstructionParam(classDeclaration))
@@ -49,7 +54,7 @@ class DecoratorVisitor(private val codeGenerator: CodeGenerator, private val log
                     )
                     .addProperty(
                         PropertySpec.builder(
-                            "$classDeclaration".lowercase(),
+                            "${classDeclaration}1".lowercase(),
                             getTypeName(classDeclaration)
                         )
                             .initializer("$classDeclaration".lowercase())
@@ -66,6 +71,23 @@ class DecoratorVisitor(private val codeGenerator: CodeGenerator, private val log
         fileSpec.writeTo(codeGenerator, true)
     }
 
+    override fun visitFunctionDeclaration(function: KSFunctionDeclaration, data: Unit) {
+        super.visitFunctionDeclaration(function, data)
+
+        //On accept this will call visitTypeReference
+        function.returnType?.accept(this, Unit)
+
+        //Add to list
+        function.returnType?.let {
+            functions.add(Func("$function", it))
+        }
+    }
+
+    override fun visitTypeReference(typeReference: KSTypeReference, data: Unit) {
+        super.visitTypeReference(typeReference, data)
+        logger.warn("Return Type: $typeReference")
+    }
+
     private fun getAllFunctions(classDeclaration: KSClassDeclaration): Iterable<FunSpec> {
         return functions.map {
             val returnType = it.returnType.toTypeName()
@@ -74,38 +96,21 @@ class DecoratorVisitor(private val codeGenerator: CodeGenerator, private val log
             FunSpec.builder(it.functionName)
                 .addModifiers(KModifier.OVERRIDE)
                 .returns(returnType)
-                .addStatement("return $paramName.${it.functionName}()")
+                .addStatement("return ${paramName}1.${it.functionName}()")
                 .build()
         }
     }
 
     private fun getConstructionParam(classDeclaration: KSClassDeclaration): ParameterSpec {
-        return ParameterSpec.builder("$classDeclaration".lowercase(), getTypeName(classDeclaration))
+        return ParameterSpec.builder(
+            "$classDeclaration".lowercase(),
+            getTypeName(classDeclaration)
+        )
             .build()
     }
 
     private fun getTypeName(classDeclaration: KSClassDeclaration): TypeName {
         return ClassName(classDeclaration.packageName.asString(), "$classDeclaration")
-    }
-
-    override fun visitFunctionDeclaration(function: KSFunctionDeclaration, data: Unit) {
-        super.visitFunctionDeclaration(function, data)
-
-        function.returnType?.accept(this, Unit)
-
-        //Add to list
-        function.returnType?.let {
-            functions.add(Func("$function", it))
-        }
-
-    }
-
-    override fun visitTypeReference(typeReference: KSTypeReference, data: Unit) {
-        super.visitTypeReference(typeReference, data)
-
-        logger.warn("Return Type: $typeReference")
-
-
     }
 
 
